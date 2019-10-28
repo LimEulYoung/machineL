@@ -5,7 +5,8 @@ import time
 
 # 테스트 데이터 불러오기
 test = pd.read_csv(r'C:\Users\lim\Downloads\KISA-challenge2019-Network_trainset\('
-                   r'참고)network_train_set1_분할\network_train_set1_00011.csv', sep=',', error_bad_lines=False)
+                   r'참고)network_train_set1_분할\network_train_set1_00000.csv',
+                   sep=',', error_bad_lines=False)
 test = test.dropna(subset=['ip.src', 'ip.dst'])  # 출발지/도착지 IP가 없으면 삭제함
 protocol_list = ['TCP', 'HTTP/XML', 'DNS', 'SMB', 'SMB2', 'ICMP', 'NTP', 'HTTP', 'UDP', 'TLSv1.2', 'SSH', 'SSHv2',
                  'FTP', 'FTP-DATA', 'TLSv1', 'SSLv3', 'SSL', 'SSLv2', 'RPC_NETLOGON', 'DCERPC', 'EPM', 'SMB', 'SMB2',
@@ -13,6 +14,7 @@ protocol_list = ['TCP', 'HTTP/XML', 'DNS', 'SMB', 'SMB2', 'ICMP', 'NTP', 'HTTP',
                  'TLSv1.3', 'OpcUa', 'WebSocket', 'SAMR', 'BROWSER', 'BJNP', 'SSDP', 'GQUIC', 'STUN', 'Elasticsearch',
                  'UDPENCAP']
 udp_list = ['ICMP', 'NTP', 'BROWSER', 'BJNP', 'SSDP', 'GQUIC', 'STUN', 'Elasticsearch', 'UDPENCAP']
+error_session = []
 # 허용할 프로토콜 리스트
 # 잘 불러왔는 지 확인
 print(test['_ws.col.Protocol'].unique())
@@ -103,7 +105,7 @@ def src_byte_count(ddf):
     if len(unique) > 1:
         unique = unique[1]
     ssrc_ip = ddf.loc[0, 'ip.src']
-    if unique in udp_list:
+    if (unique in udp_list) | (unique in ['UDP', 'DNS']):
         return ddf.loc[ddf['ip.src'] == ssrc_ip]['udp.length'].sum()
     else:
         return ddf.loc[ddf['ip.src'] == ssrc_ip]['tcp.len'].sum()
@@ -114,7 +116,7 @@ def dst_byte_count(ddf):
     if len(unique) > 1:
         unique = unique[1]
     ddst_ip = ddf.loc[0, 'ip.dst']
-    if unique in udp_list:
+    if (unique in udp_list) | (unique in ['UDP', 'DNS']):
         return ddf.loc[ddf['ip.src'] == ddst_ip]['udp.length'].sum()
     else:
         return ddf.loc[ddf['ip.src'] == ddst_ip]['tcp.len'].sum()
@@ -145,7 +147,12 @@ def flow(ddf):
         src_flow = '내부'
     else:
         src_flow = '외부'
+    if src_flow == '내부':
+        return 0
+    else:
+        return 1
 
+def flow2(ddf):
     ddst_ip = list(map(int, ddf.loc[0, 'ip.dst'].split('.')))
     if (ddst_ip[0] == 192) & (ddst_ip[1] == 168):
         dst_flow = '내부'
@@ -155,11 +162,13 @@ def flow(ddf):
         dst_flow = '내부'
     else:
         dst_flow = '외부'
-    return src_flow + '->' + dst_flow
-
+    if dst_flow == '내부':
+        return 0
+    else:
+        return 1
 
 def error_check2(nnew_df, ddf):
-    if ddf.loc[0, '_ws.col.Protocol'] == 'UDP':
+    if ddf.loc[0, '_ws.col.Protocol'] in ['UDP', 'DNS']:
         a = nnew_df.loc[(nnew_df['src_ip'] == ddf.loc[0, 'ip.src']) & (nnew_df['dst_ip'] == ddf.loc[0, 'ip.dst']) & (
                 nnew_df['src_port'] == ddf.loc[0, 'udp.srcport']) & (nnew_df['dst_port'] == ddf.loc[0, 'udp.dstport'])]
         b = nnew_df.loc[(nnew_df['src_ip'] == ddf.loc[0, 'ip.dst']) & (nnew_df['dst_ip'] == ddf.loc[0, 'ip.src']) & (
@@ -185,20 +194,20 @@ def anomaly_url(ddf):
     return 0
 
 
-new_df_list = []
 start = time.time()
 test = test[test['_ws.col.Protocol'].isin(protocol_list)].reset_index(drop=True)  # 허용 프로토콜 외 모두 삭제
 df = test[test['_ws.col.Protocol'].isin(protocol_list)].reset_index(drop=True)
 new_df = pd.DataFrame(
-    columns=['start_time', 'last_time', 'flow', 'protocol', 'src_ip', 'src_port', 'dst_ip', 'dst_port',
+    columns=['start_time', 'last_time', 'src_flow', 'dst_flow', 'protocol', 'src_ip', 'src_port', 'dst_ip', 'dst_port',
              'src_packet_count', 'dst_packet_count', 'src_byte_count', 'dst_byte_count', 'duration', 'land',
              'count_404', 'anomaly_url'])  # 새로운 데이터 프레임 생성
+new_df_list = []
+
 win_size = 50000
 k = round(len(df) / win_size)
 df_list = []
 for i in range(0, k + 1):
     df_list.append(df[i * win_size:(i * win_size) + win_size])
-error_session = []
 
 while len(df_list[0]) != 0:
     src_ip = df_list[0].loc[0, 'ip.src']
@@ -245,7 +254,7 @@ while len(df_list[0]) != 0:
 
     start_time = session.loc[0, '_ws.col.UTCtime']
     last_time = session.loc[session.tail(1).index.item(), '_ws.col.UTCtime']
-    new_df.loc[len(new_df)] = [start_time, last_time, flow(session), service(session), src_ip, src_port, dst_ip,
+    new_df.loc[len(new_df)] = [start_time, last_time, flow(session), flow2(session), service(session), src_ip, src_port, dst_ip,
                                dst_port, src_packet_count(session), dst_packet_count(session), src_byte_count(session),
                                dst_byte_count(session), duration(session), land(session), count_404(session),
                                anomaly_url(session)]
@@ -310,20 +319,23 @@ while len(df_list[0]) != 0:
                                  seconds=int(new_df.tail(1)['last_time'].item()[6:8]))
             new_df.loc[e_index, 'duration'] = e_delta2.seconds - e_delta.seconds
             new_df = new_df.drop(len(new_df) - 1, 0)
-    print(len(new_df))
-    if (len(df_list[0]) < win_size+win_size/2) & (len(df_list) != 1):
+    # print(len(new_df))
+    if (len(df_list[0]) < win_size + win_size / 2) & (len(df_list) != 1):
         df_list[0] = df_list[0].append(df_list[1])
         df_list[0] = df_list[0].reset_index(drop=True)
         del df_list[1]
         print('진행중(', time.time() - start, '):', k + 1 - len(df_list), '/', k)
 
-    if len(new_df) > 10000:
-        new_df_list.append(new_df[0:2500])
-        new_df = new_df[2500:]
+    if len(new_df) > 50000:
+        new_df_list.append(new_df[0:45000])
+        new_df = new_df[45000:]
         new_df = new_df.reset_index(drop=True)
 
-# result = pd.concat(new_df_list).reset_index(drop=True)
-# result = pd.concat([result, new_df]).reset_index(drop=True)
+if len(new_df_list) != 0:
+    result = pd.concat(new_df_list).reset_index(drop=True)
+    result = pd.concat([result, new_df]).reset_index(drop=True)
+else:
+    result = new_df
 
-with pd.ExcelWriter(r'C:\Users\lim\Desktop\output.xlsx') as writer:
-    new_df.to_excel(writer, index=None)
+with pd.ExcelWriter(r'C:\Users\lim\Desktop\최종.xlsx') as writer:
+    result.to_excel(writer, index=None)
